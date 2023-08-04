@@ -1,0 +1,1224 @@
+import pandas as pd
+import numpy as np
+from dateutil import parser
+import matplotlib.pyplot as plt
+import calendar
+import statistics
+import math
+from sklearn.linear_model import LinearRegression,Lasso, ElasticNet, Ridge, LogisticRegression
+from sklearn.model_selection import train_test_split, cross_val_score,GridSearchCV
+import matplotlib.colors as mcolors
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import r2_score, mean_squared_error,accuracy_score, precision_score, recall_score, f1_score,make_scorer,brier_score_loss,confusion_matrix
+from sklearn.calibration import calibration_curve
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+import statsmodels.api as sm
+import seaborn as sns
+import itertools
+import statsmodels.stats.api as sms
+
+import warnings
+warnings.filterwarnings("ignore")
+pd.set_option('display.max_columns', 1000)
+pd.set_option('display.max_rows', 1000)
+
+
+#################################################################################################################################################
+
+def handle_data():
+    """
+    Purpose:
+        Import the hourly weather data and perform modifications before analysis.
+
+    Args:
+        none
+    
+    Returns:
+        data: Hourly weather data from 2000-2023 from Schiphol, Vlissingen and De Bildt
+        schiphol_data: Hourly weather data from 2000-2023 from Schiphol
+        vilssingen_data: Hourly weather data from 2000-2023 from Vlissingen
+        debildt_data:Hourly weather data from 2000-2023 from De Bildt
+    """
+    
+    #Define more ituitive column names
+    columns =['weather station', 'date', 'hour', 'temperature', 'min. temp.last 6 hours','dew tempurature', 'duration rain','hoursum rain', 'cloud coverage','rain']
+
+
+    #Import the data
+    data = pd.read_csv(r'C:/Users/SPNMo/Downloads/FINALDATA.csv', delimiter=',')
+    
+    # Get correct datetime type for the dates column
+    data['date'] = pd.to_datetime(data['date'], format='%Y%m%d')
+    
+    # Replace the indicator of the weather station by its location
+    
+    data['weather station'] = data['weather station'].replace(240.0, "Schiphol")
+    data['weather station'] = data['weather station'].replace(260.0, "De Bildt")
+    data['weather station'] = data['weather station'].replace(310.0, "Vlissingen")
+
+    # We change the units of some of the data in the data file
+    for column in columns:
+        if column in ['temperature', 'min. temp.last 6 hours', 'dew temperature', 'hoursum rain']:
+            data[column] = data[column] / 10
+            
+    
+    # For several reasons, we set very small precipitation amounts equal to 0.
+    data['hoursum rain'] = data['hoursum rain'].replace(-0.1,0)
+    
+    #Extracts seperate files by extracting them again from the  combined file based on location.
+    schiphol_data = data[data['weather station'] == 'Schiphol']
+    vlissingen_data = data[data['weather station'] == 'Vlissingen']
+    debildt_data = data[data['weather station'] == 'De Bildt']
+
+    # return the datafiles
+    return data, schiphol_data,vlissingen_data,debildt_data
+
+
+def handle_daily_data():
+    """
+    Purpose:
+        Import the daily weather data and perform modifications before analysis.
+    Args:
+        none
+    Returns:
+        daily_data: Daily weather data from 2000-2023 from Schiphol, Vlissingen and De Bildt
+        daily_schiphol_data: Hourly weather data from 2000-2023 from Schiphol
+        daily_vilssingen_data: Hourly weather data from 2000-2023 from Vlissingen
+        daily_debildt_data:Hourly weather data from 2000-2023 from De Bildt
+    """
+    
+    labels =['weather station', 'date', 'minimal temperature','dailysum rain',]
+
+    daily_data = pd.read_csv(r'C:/Users/SPNMo/Downloads/DailyDataFinalQ1', delimiter=',', index_col = False)    
+    daily_data.columns = labels
+
+    # Get correct datetime type for the dates column
+    daily_data['date'] = pd.to_datetime(daily_data['date'], format='%Y%m%d')
+
+    # Replace the indicator of the weather station by its location
+    daily_data['weather station'] = daily_data['weather station'].replace(240.0, "Schiphol")
+    daily_data['weather station'] = daily_data['weather station'].replace(260.0, "De Bildt")
+    daily_data['weather station'] = daily_data['weather station'].replace(310.0, "Vlissingen")
+
+     #We change the units of some of the data in the data file
+    for label in labels:
+        if label in ['minimal temperature','dailysum rain']:
+            daily_data[label] = daily_data[label] / 10
+    
+    # for several reasons we set the amount of precipitation equal to 0 when its very small.
+    daily_data['dailysum rain'] = daily_data['dailysum rain'].replace(-0.1,0)
+    
+    # Update the seperate files by extracting them again from the merged file.
+    daily_schiphol_data = daily_data[daily_data['weather station'] == 'Schiphol']
+    daily_vlissingen_data = daily_data[daily_data['weather station'] == 'Vlissingen']
+    daily_debildt_data = daily_data[daily_data['weather station'] == 'De Bildt']
+
+    
+    return daily_data, daily_schiphol_data, daily_vlissingen_data, daily_debildt_data 
+    
+
+daily_data, daily_schiphol_data, daily_vlissingen_data, daily_debildt_data = handle_daily_data()
+data, schiphol_data,vlissingen_data,debildt_data = handle_data()
+
+
+def group_data_by_hour(data):
+    """
+    Purpose:
+        Group the data per hour
+    Args:
+        data: DataFrame with hourly or daily data corrosponding to one or all locations data
+    Returns:
+        grouped_data: The data grouped on hours 
+    """
+    
+    # Create a new column for the year
+    data['year'] = data['date'].dt.year
+
+    # Create a new column for the month
+    data['month'] = data['date'].dt.month
+
+    # Create a new column for the day
+    data['day'] = data['date'].dt.day
+
+    # Group the data by 'Hour'
+    grouped_data = data.groupby('hour')
+    
+    return grouped_data
+
+def hourly_data(data,name):
+    """
+    Purpose:
+        Calculate the boxplot data for the hourly weather data
+    Args:
+        data: Hourly weather data
+    Returns:
+        boxplot_data: The data for our boxplot 
+    """
+    # Initialize an empty list to store boxplot data filtered by rainfall bigger than 0
+    filtered_boxplot_data = []
+     
+    # Define empty arrays where we store the hours and frequency of rainfall.
+    hours = []
+    rain_frequency = []
+    mean_hour = []
+    descriptive_stats = []
+    
+    # group the data per hour
+    grouped_data = group_data_by_hour(data)
+
+    # Iterate through each group (hour)
+    for hour, hourly_grouped_data in grouped_data:
+        
+        # Filter rows for the specific hour and precipitation greater than 0
+        filtered_data = hourly_grouped_data[(hourly_grouped_data['hour'] == hour) & (hourly_grouped_data['hoursum rain'] > 0.05)]
+        
+        # Append filtered data to the list
+        filtered_boxplot_data.append(filtered_data['hoursum rain'])
+                               
+        
+        hourly_data = hourly_grouped_data[(hourly_grouped_data['hour'] == hour)]                                     
+        
+        # Take the sum of every hour of the binary indicator for rain to obtain the frequency of rainfall in every hour
+        rain_frequency.append(hourly_data['rain'].sum())
+        
+        # We append the hours to a list
+        hours.append(hour)
+        
+        #We append the mean of every hour to a list
+        mean_hour.append(hourly_data['hoursum rain'].mean())
+        
+    
+    plot_hourly_boxplot(data,name, filtered_boxplot_data)
+    hourly_bar_plot(data,name,hours,rain_frequency,mean_hour)
+   
+    # Calculate statistics for hourly boxplots
+    statistics_hourly_boxplot = calculate_boxplot_statistics(filtered_boxplot_data)
+
+    #Print the statistics for daily boxplots
+    print(f"Statistics for Daily Box Plots ({name}):")
+    print_boxplot_statistics(statistics_hourly_boxplot)
+    
+                                          
+
+def plot_hourly_boxplot(data,name,filtered_boxplot_data):
+    """
+    Purpose:
+        Make boxplots for the hourly precipitation data
+    Args:
+        data: Hourly weather data
+        name: The location of the weather station
+    Returns:
+        none
+    """   
+    # Create a figure and axis
+    fig1, ax1 = plt.subplots(figsize=(10, 6))
+    
+    # Define colors for the boxplots
+    colors = plt.cm.Set3(range(1, len(filtered_boxplot_data) + 1))
+
+    # Create the boxplot with custom colors
+    bp = ax1.boxplot(filtered_boxplot_data, patch_artist=True, labels=range(1, 25), whis = 3)
+
+    # Set median line color to black
+    for median in bp['medians']:
+        median.set(color='black')
+
+    # Set boxplot colors
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)
+
+    # Set labels and title
+    ax1.set_xlabel('Hour')
+    ax1.set_ylabel('Hourly Rainfall (in mm)')
+    ax1.set_title(f'Box Plots for Hourly Rainfall (in mm) at {name}  (Observations > 0.05)')
+    plt.savefig(f"BOXPlOT HOURLY OF {name}.jpeg")
+    plt.show()
+    
+
+def hourly_bar_plot(data,name,hours,rain_frequency,mean_hour):
+    """
+    Purpose:
+        display some descriptive statistics on the hourly percipitation data
+    Args:
+        data: Hourly percipitation data
+        name: The location of the weather station
+    Returns:
+        none
+    """
+
+    fig2, ax2 = plt.subplots(figsize=(10, 6))
+    ax2.bar(hours, rain_frequency, edgecolor='black', color = 'blue', width = 1)
+    ax2.set_xticks(hours)
+    ax2.set_ylim(1250,1850)
+    ax2.set_xlabel('The Hour')
+    ax2.set_ylabel('Frequency rain')
+    ax2.set_title(f'Frequency of rainfall per hour measured at {name} in 2001-2023 (All observations)')
+    plt.savefig(f" FREQUENCY HOURLY OF {name}.jpeg")
+    plt.show()
+    
+    fig3, ax3 = plt.subplots(figsize=(10, 6))
+    ax3.bar(hours, mean_hour, edgecolor='black', color = 'blue', width = 1)
+    ax3.set_xticks(hours)
+    ax3.set_xlabel('The Hour')
+    ax3.set_ylabel('Mean rain')
+    ax3.set_title(f'Mean of rainfall per hour measured at {name} in 2001-2023 (All Observations)')
+    plt.savefig(f" MEAN HOURLY OF {name}.jpeg")
+    plt.show()
+
+
+def group_by_month(data):
+    """
+    Purpose:
+        Group the data per month
+    Args:
+        data: DataFrame with hourly or daily data corrosponding to one or all locations data
+    Returns:
+        grouped_data: The data grouped on months 
+    """
+    
+    # Create a new column for the year
+    data['year'] = data['date'].dt.year
+
+    # Create a new column for the day
+    data['day'] = data['date'].dt.day
+
+    # Create a new column for the month
+    data['month'] = data['date'].dt.month
+
+    # Group the data by month
+    grouped_data = data.groupby('month')
+    
+    return grouped_data
+
+
+def daily_data(data, name):
+    """
+    Purpose:
+        Make boxplots for the daily precipitation data and display/calculate descriptive statistics
+    Args:
+        data: daily weather data
+        name: The location of the weather station
+    Returns:
+        none
+    """
+    
+    # Create an empty list to store boxplot data
+    boxplot_data = []
+    means = []
+    
+    # Group the data by month
+    grouped_data = group_by_month(data)
+
+    # Create a list of month names for x-axis labels
+    month_names = [calendar.month_name[i] for i in range(1, 13)]
+
+    # Iterate over each group
+    for group in grouped_data:
+        group_df = group[1].reset_index()
+        boxplot_list = []
+        for row in group_df.iterrows():
+            values = row[1]['dailysum rain']
+            boxplot_list.append(values)
+        boxplot_data.append(boxplot_list)
+        
+    for sublist in boxplot_data:
+        sublist_mean = statistics.mean(sublist)
+        means.append(sublist_mean)
+    
+    daily_bar_plots(data,name,means,month_names)
+    frequency_histrogram(data,name,boxplot_data)
+    plot_daily_box_plots(data,name,boxplot_data,month_names)
+    
+    # Calculate statistics for daily boxplots
+    statistics_boxplot = calculate_boxplot_statistics(boxplot_data)
+    
+    # Print the statistics for daily boxplots
+    print(f"Statistics for Daily Box Plots ({name}):")
+    print_boxplot_statistics(statistics_boxplot)
+    
+    
+def daily_bar_plots(data,name,means,month_names):
+    """
+    Purpose:
+        display bar plots on the mean daily precipitation on the daily percipitation data
+    Args:
+        data: Percipitation data
+        name: The location of the weather station
+        means: Array with means for the days
+        month_names: List of the names of the months of the year
+    Returns:
+        none
+    """
+    
+    # Create a bar plot of means against seasons
+    fig4, ax4 = plt.subplots(figsize=(10, 6))
+    ax4.bar(month_names, means, color= 'blue', edgecolor = 'black')
+
+    # Set the title and labels
+    # Set the x-axis range
+    ax4.set_xlabel('Month')
+    ax4.set_ylabel('Mean Daily Rainfall Amount (in mm)')
+    ax4.set_title(f'Mean Daily Rainfall (in mm) in {name} across the year between 2001-2023')
+
+    # Rotate x-axis labels for better readability
+    plt.draw()
+    ax4.set_xticklabels(month_names, rotation = 45)
+    plt.savefig(f" BAR PLOTS DAILY {name}.jpeg")
+    plt.show()
+
+def frequency_histrogram(data,name,boxplot_data):
+    """
+    Purpose:
+        display bar plots on the frequency of some precipitation amount.
+    Args:
+        data: Percipitation data
+        name: The location of the weather station
+        boxplot_data: Data representing the boxplots
+    Returns:
+        none
+    """
+    
+    # Concatenate all sublists into a single list
+    all_data = [value for sublist in boxplot_data for value in sublist]
+
+    # Create a histogram of the frequency of rainfall
+    fig5, ax5 = plt.subplots(figsize=(10, 6))
+    ax5.hist(all_data, bins=40,edgecolor = 'black', color = 'blue')  # Adjust the number of bins as desired
+
+    # Set the title and labels
+    ax5.set_title(f'Histogram of The Frequency Of Daily Rainfall Amounts (in mm) Across The Year at {name} for  2001-2023')
+    ax5.set_xlabel('Rainfall Amount (mm)')
+    ax5.set_ylabel('Frequency')
+    plt.savefig(f"FREQUENCY OF RAINFALL DAILY {name}.jpeg")
+    plt.show()
+
+def plot_daily_box_plots(data,name,boxplot_data,month_names):
+    """
+    Purpose:
+        display boxplots on the daily precipitation of the daily percipitation data
+    Args:
+        data: Percipitation data
+        name: The location of the weather station
+        boxplot_data: Data representing the boxplots
+        month_names: List of the names of the months of the year
+    Returns:
+        none
+    """
+        
+    # Create a figure and axes for the boxplots with a custom size
+    fig6, ax6 = plt.subplots(figsize=(10, 6))  # Adjust the width and height as desired
+
+    # Create the boxplot using all the data
+    bp = ax6.boxplot(boxplot_data, patch_artist=True, medianprops={'color': 'black'}, whis = 3)
+
+    # Customize the boxplot properties
+    colors = plt.cm.Set3(range(1, len(boxplot_data) + 1))
+
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)  # Set the box color
+    plt.draw()
+    # Set the x-axis tick labels to month names
+    ax6.set_xticklabels(month_names, rotation=45, ha='right')
+
+    # Set the title and labels
+    ax6.set_title(f'Boxplots For Daily Rainfall for {name} (in mm) 2001-2023')
+    ax6.set_xlabel('Month')
+    ax6.set_ylabel('Daily Rainfall Amount (in mm)')
+    
+    plt.savefig(f"BOXPLOTS RAIN DAILY {name}.jpeg")
+    # Display the plot
+    plt.show()
+
+        
+# Create a dictionary to acces the correct location data        
+daily_stations_data = {
+        'Schiphol': daily_schiphol_data,
+        'Vlissingen': daily_vlissingen_data,
+        'DeBilt': daily_debildt_data     
+    }
+
+stations_data = {
+        'Schiphol': schiphol_data,
+        'Vlissingen': vlissingen_data,
+        'DeBilt': debildt_data     
+    }
+
+def month_data(daily_stations_data):
+    
+    """
+    Purpose:
+        Calculate the number of times it rained for each month and display as bar plot
+    Args:
+        daily_stations_data: a dictionary to acces the correct location data   
+    Returns:
+        none
+    """     
+    
+    # Loop through the stations
+    for station, data in daily_stations_data.items():
+        data['Rain (1 or 0)'] = ['1' if rainfall_amount > 0 else '0' for rainfall_amount in data['dailysum rain']]
+        grouped_data = group_by_month(data)
+
+        final_list = []
+
+        for month, group in grouped_data:
+            rain_counts = group['Rain (1 or 0)'].value_counts().get('1', 0)
+            final_list.append([month, rain_counts])
+
+
+        # Extract months and counts from the final_list
+        months = [calendar.month_name[item[0]] for item in final_list]
+        counts = [item[1] for item in final_list] 
+        
+        # Plotting
+        plt.bar(months, counts)
+        plt.xlabel('Month')
+        plt.ylabel('Number Of Rain Counts')
+        plt.title(f'Number Of Rain Counts by Month Using Data From 2001-2023: {station}')
+
+        # Rotate x-axis labels
+        plt.xticks(rotation=45, ha='right')
+
+        plt.tight_layout()
+        plt.savefig(f"MONTHGRAPHS {station}.jpeg")
+        plt.show() 
+
+
+def map_seasons(month):
+    """
+    Purpose:
+        Map the number of the months to create a cluster of months which are the seasons.
+    Args:
+        month:The month that we are going to map to a season
+    Returns:
+        none
+    """
+    
+    if month in [3, 4, 5]:return 'Spring'
+    if month in [6, 7, 8]:return 'Summer'
+    if month in [9, 10, 11]:return 'Autumn'
+    return 'Winter'
+       
+def season_data(stations_data):
+    
+    """
+    Purpose:
+        Calculate the number of times it rained per season to compare.
+    Args:
+        stations_data: a dictionary to acces the correct location data   
+    Returns:
+        none
+    """
+    
+    #Define the periods
+    periods = {
+        '2001-2010': ('2001-01-01', '2010-12-31'),
+        '2011-2023': ('2011-01-01', '2023-01-01')
+    }
+
+    # Define the seasons
+    seasons = ['Winter', 'Summer', 'Spring', 'Autumn']
+
+    # Calculate mean rainfall for each station and period
+    rainfall_means = {}
+    for station, data in daily_stations_data.items():
+        rainfall_means[station] = {}
+    
+        for period, (start_date, end_date) in periods.items():
+            filtered_data = data.copy()
+            filtered_data.set_index('date', inplace=True)
+
+            filtered_data_period = filtered_data.loc[start_date:end_date]
+            filtered_data_period['month'] = filtered_data_period.index.month
+            filtered_data_period['season'] = filtered_data_period['month'].apply(map_seasons)
+
+            rainfall_means[station][period] = []
+            for season in seasons:
+                season_data = filtered_data_period.loc[filtered_data_period['season'] == season]
+                mean_rainfall = season_data['dailysum rain'].mean()
+                rainfall_means[station][period].append(mean_rainfall)
+
+    # Plot the mean daily rainfall for each station and period
+    bar_width = 0.3
+    r = range(len(seasons))
+
+    for station, data in rainfall_means.items():
+        plt.figure()
+        plt.bar(r, data['2001-2010'], width=bar_width, label='2001-2010')
+        plt.bar([x + bar_width for x in r], data['2011-2023'], width=bar_width, label='2011-2023')
+
+        plt.xticks([x + bar_width/2 for x in r], seasons)
+        plt.ylabel('Mean Daily Rainfall (in mm)')
+        plt.title(f'Mean Daily Rainfall (in mm) by Season - {station} (2001-2023)')
+        plt.legend(['2001-2010', '2011-2023'])
+        plt.savefig(f"BYSEASONGRAPHS for{station}.jpeg")
+        plt.show()
+
+def calculate_boxplot_statistics(data):
+    statistics_boxplot = []
+    for sublist in data:
+        stats = {}
+        stats['minimum'] = min(sublist)
+        stats['maximum'] = max(sublist)
+        stats['lower bound'] = 0
+        stats['upper bound'] = np.percentile(sublist, 75) + (1.5 * (np.percentile(sublist, 75) - np.percentile(sublist, 25)))
+        stats['median'] = statistics.median(sublist)
+        stats['Q1'] = np.percentile(sublist, 25)
+        stats['Q3'] = np.percentile(sublist, 75)
+        stats['IQR'] = stats['Q3'] - stats['Q1']
+        stats['mean'] = statistics.mean(sublist)
+        statistics_boxplot.append(stats)
+    return statistics_boxplot
+
+def print_boxplot_statistics(statistics_boxplot):
+    for i, stats in enumerate(statistics_boxplot):
+        print(f"Statistics for hour {i+1}:")
+        print(f"Minimum: {stats['minimum']}")
+        print(f"Maximum: {stats['maximum']}")
+        print(f"Median: {stats['median']}")
+        print(f"Q1: {stats['Q1']}")
+        print(f"Q3: {stats['Q3']}")
+        print(f"IQR: {stats['IQR']}")
+        print(f"Mean: {stats['mean']}")
+        print(f"Lower bound: {stats['lower bound']}")
+        print(f"Upper bound: {stats['upper bound']}")
+        print("########################################################################")
+
+        
+for station, data in stations_data.items():
+    hourly_data(data, station)
+   
+for station, data in daily_stations_data.items():   
+    daily_data(data, station)
+        
+month_data(daily_stations_data)
+season_data(daily_stations_data)
+
+#################################################################################################################################################
+
+def handle_forecast_data_24_lead_time():
+
+    forecast_data_Schiphol = pd.read_csv(r'C:/Users/SPNMo/.spyder-py3/Schiphol24HourLeadTimeFinal.csv', delimiter=',', index_col=False)
+    forecast_data_Vlissingen = pd.read_csv(r'C:/Users/SPNMo/.spyder-py3/Vlissingen24HourLeadTimeFinal.csv', delimiter=',', index_col=False)
+    forecast_data_DeBildt = pd.read_csv(r'C:/Users/SPNMo/.spyder-py3/DeBildt24HourLeadTimeFinal.csv', delimiter=',', index_col=False)
+    # Replace the indicator of the weather station by its location
+    forecast_data_Schiphol['WeatherStation'] = forecast_data_Schiphol['WeatherStation'].replace(6240, 'Schiphol')
+    forecast_data_Vlissingen['WeatherStation'] = forecast_data_Vlissingen['WeatherStation'].replace(6310, 'Vlissingen')
+    forecast_data_DeBildt['WeatherStation'] = forecast_data_DeBildt['WeatherStation'].replace(6260, 'DeBildt')
+    forecast_dict = {
+
+        'Schiphol': forecast_data_Schiphol,
+        'Vlissingen': forecast_data_Vlissingen,
+        'DeBildt': forecast_data_DeBildt
+    }
+
+    for station, data in forecast_dict.items():
+
+        ensemble_columns = [col for col in data.columns if col.startswith('E')]
+        data['Ensemble Mean'] = (data[ensemble_columns].mean(axis=1)) / 10
+        data['Ensemble Mean Squared'] = np.exp(0.125 * data['Ensemble Mean'])
+        data['Ensemble Median'] = data[ensemble_columns].median(axis=1) / 10
+        data['Ensemble Std'] = data[ensemble_columns].std(axis=1) / 10
+        data['HighResForecast'] = data['HighResForecast'] / 10
+        data['Min Value'] = data[ensemble_columns].min(axis = 1) / 10
+        data['Max Value'] =  data[ensemble_columns].max(axis = 1) / 10
+        data['Kurtosis'] = data[ensemble_columns].kurtosis(axis = 1) / 10
+        data["Skewness"] = data[ensemble_columns].skew(axis = 1) / 10
+        data['Range'] = (data[ensemble_columns].max(axis = 1) - data[ensemble_columns].min(axis = 1)) / 10
+        data['Q1'] = data[ensemble_columns].quantile(q=0.25, axis=1) /10
+        data['Q3'] = data[ensemble_columns].quantile(q = 0.75, axis = 1)/10
+        data['IQR'] = data['Q3'] - data['Q1']
+        data['Corrolation'] = data['Ensemble Median'].corr(data['HighResForecast'])
+        data['count'] = data[ensemble_columns].count(axis = 1)
+        data['Variance'] = data['Ensemble Std']**2
+        data['proportion']  = data[ensemble_columns].gt(0).sum(axis=1) / data.shape[1]
+        
+        for col in ensemble_columns:
+            data[col] = data[col] / 10  # Modify the values as desired
+
+
+    return forecast_data_Schiphol, forecast_data_Vlissingen, forecast_data_DeBildt
+
+#################################################################################################################################################
+
+lead_times = [24,120]
+
+for lead_time in lead_times:
+    if lead_time == 24:
+        forecast_data_Schiphol, forecast_data_Vlissingen, forecast_data_DeBildt = handle_forecast_data_24_lead_time()
+    elif lead_time == 120:
+        forecast_data_Schiphol, forecast_data_Vlissingen, forecast_data_DeBildt = handle_forecast_data_120_lead_time()
+    
+    forecast_data_dict = {
+        'Schiphol': forecast_data_Schiphol,
+        'Vlissingen': forecast_data_Vlissingen,
+        'DeBildt': forecast_data_DeBildt
+    }
+
+    daily_data_dict = {
+        'Schiphol': daily_schiphol_data,
+        'Vlissingen': daily_vlissingen_data,
+        'De Bildt': daily_debildt_data
+    }
+
+    list_to_store_data_frames = []
+
+    for (forecast_station, forecast_data), (daily_station, daily_data) in zip(forecast_data_dict.items(), daily_data_dict.items()):
+        
+        # Specify the date range based on lead time
+        if lead_time == 24:
+            start_date_lead = pd.to_datetime('2016-04-01')
+            end_date_lead = pd.to_datetime('2021-04-30')
+            
+            # Create a boolean mask for the desired date range
+            mask = (daily_data['date'] >= start_date_lead) & (daily_data['date'] <= end_date_lead)
+        
+            # Apply the mask to filter the DataFrame
+            desired_data = daily_data[(daily_data['weather station'] == daily_station) & mask][['date', 'weather station', 'dailysum rain']]
+            desired_data = desired_data.rename(columns={'dailysum rain': 'Actual Value'})
+            desired_data = desired_data.reset_index(drop=True)
+            forecast_data['Actual Value'] = desired_data['Actual Value']
+            forecast_data["Rain"] = forecast_data['Actual Value'].apply(lambda x: 1 if x > 0 else 0)
+            forecast_data['Date'] = pd.to_datetime(forecast_data['Date'], format='%d/%m/%Y').dt.strftime('%Y-%m-%d')
+            forecast_data['Date'] = desired_data['date']
+            forecast_data.set_index('Date', inplace=True)
+            forecast_data.drop('Index', axis=1, inplace=True)
+            p_rain=np.empty(forecast_data.shape[0],dtype=float)
+            for i in range(forecast_data.shape[0]):
+                p_rain[i]=np.mean(forecast_data.iloc[i,2:54]>0)
+            forecast_data["p_rain"]=p_rain
+            
+            display(forecast_data.head(10))
+            
+        elif lead_time == 120:
+            start_date_lead = pd.to_datetime('2016-04-05') 
+            end_date_lead = pd.to_datetime('2021-05-04')
+            
+            # Create a boolean mask for the desired date range
+            mask = (daily_data['date'] >= start_date_lead) & (daily_data['date'] <= end_date_lead)
+        
+            # Apply the mask to filter the DataFrame
+            desired_data = daily_data[(daily_data['weather station'] == daily_station) & mask][['date', 'weather station', 'dailysum rain']]
+            desired_data = desired_data.rename(columns={'dailysum rain': 'Actual Value'})
+            desired_data = desired_data.reset_index(drop=True)
+            forecast_data['Actual Value'] = desired_data['Actual Value']
+            forecast_data["Rain"] = forecast_data['Actual Value'].apply(lambda x: 1 if x > 0 else 0)
+            forecast_data['Date'] = pd.to_datetime(forecast_data['Date'], format='%d/%m/%Y').dt.strftime('%Y-%m-%d')
+            forecast_data['Date'] = desired_data['date']
+            forecast_data.set_index('Date', inplace=True)
+            forecast_data.drop('Index', axis=1, inplace=True)
+            p_rain=np.empty(forecast_data.shape[0],dtype=float)
+            for i in range(forecast_data.shape[0]):
+                p_rain[i]=np.mean(forecast_data.iloc[i,2:54]>0)
+            forecast_data["p_rain"]=p_rain
+
+    
+            display(forecast_data.head(10))
+        
+        list_to_store_data_frames.append(forecast_data)
+        
+        RMSE_NWP_raw_Ensemble = np.sqrt(mean_squared_error(forecast_data['Ensemble Mean'], forecast_data['Actual Value']))
+        RMSE_NWP_raw_HighRes = np.sqrt(mean_squared_error(forecast_data['HighResForecast'], forecast_data['Actual Value']))
+        
+        
+        #Perform OLS Regression using Esemble Mean or HighResForecast as Independent X Variables
+        list_of_independent_variables = ['Ensemble Mean', 'HighResForecast']
+
+        for variable in list_of_independent_variables:
+    
+            X = forecast_data[[variable]]
+            y = forecast_data['Actual Value']
+        
+            # Add a constant term to the predictor variable(s)
+            
+            X = sm.add_constant(X)
+            # Split the data into train and test sets
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+           
+        
+            # Create and fit the OLS model
+            model = sm.OLS(y_train, X_train)
+            results = model.fit()
+        
+            # Print the regression results
+            print(results.summary())
+        
+            # Make predictions using the fitted model
+            predictions = results.predict(X_test)
+            
+            # Create an extended range of x-axis values for the prediction line
+            x_min = X_test[variable].min()
+            x_max = X_test[variable].max()
+            x_line = np.linspace(x_min, x_max, 100)
+            y_line = results.params[0] + results.params[1] * x_line
+        
+            # Create an extended range of x-axis values for the prediction line
+           
+            plt.figure(figsize = (12,6))
+            plt.scatter(X_test[variable], y_test, color = "blue", alpha=0.5, edgecolor='black', s=50)
+            # Plot the regression line
+            plt.plot(x_line, y_line, color='black', linewidth=2)
+            plt.title(f"OLS Regression Of Daily Rainfall Amounts (in mm): {forecast_station}")
+            plt.xlabel(f"{variable} Of Daily Rainfall Amount (in mm)")
+            plt.ylabel("Actual Daily Rainfall Amount (in mm)")
+            plt.show()
+    
+            # Calculate R-squared for train data
+            r2_train = r2_score(y_train, results.predict(X_train))
+            
+            # Calculate RMSE for train data
+            rmse_train = np.sqrt(mean_squared_error(y_train, results.predict(X_train)))
+            print(f"The R-Squared For The Training Data: {r2_train} with a lead-time: +{lead_time}h")
+            print(f'The RMSE For The Training Data: {rmse_train} with a lead-time: +{lead_time}h')
+            
+            # Calculate R-squared for test data
+            r2_test = r2_score(y_test, predictions)
+            
+            # Calculate RMSE for test data
+            rmse_test = np.sqrt(mean_squared_error(y_test, predictions))
+            print(f"The R-Squared For The Test Data: {r2_test} with a lead-time: +{lead_time}h")
+            print(f'The RMSE For The Test Data: {rmse_test} with a lead-time: +{lead_time}h')
+            
+            
+    
+        features = ['Ensemble Median','Ensemble Mean', 'Min Value', 'Max Value', 'Kurtosis', 'Skewness', 'Range', 'Q1', 'Q3', 'IQR', 'Variance', 'proportion', 'HighResForecast']
+        X = forecast_data[features].copy()
+        y = forecast_data['Actual Value'].copy()
+        
+        
+        # Split the data into train and test sets
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        X_train = sm.add_constant(X_train)
+        X_test = sm.add_constant(X_test)
+       
+        OLS = sm.OLS(y_train, X_train).fit()
+        OLS_predict = OLS.predict(X_test)
+        OLS_predict_train = OLS.predict(X_train)
+        OLS_MSE = mean_squared_error(y_test, OLS_predict)
+        OLS_rsquared = r2_score(y_test,OLS_predict)
+        OLS_resid = y_train - OLS_predict_train
+        
+    
+        breush_pagan = sms.het_breuschpagan(OLS_resid, OLS.model.exog)
+        
+
+        plt.figure()
+        plt.hist(OLS_resid, bins= 30, color='blue', edgecolor = 'black', density = True)
+        sns.kdeplot(OLS_resid, color='red', linewidth  =3)
+        plt.xlabel('Residuals')
+        plt.ylabel('Probability')
+        plt.title('Residual Histogram OLS')
+        plt.show()
+        
+        plt.figure()
+        plt.scatter(OLS_predict_train,OLS_resid,color='blue', alpha=0.7)
+        plt.axhline(y=0, color='red')
+        plt.xlabel('Predicted Value')
+        plt.ylabel('Residuals')
+        plt.title('Scatter plor Residuals OLS')
+        plt.show()
+        
+        # Estimate weight
+        OLS_dummy = sm.OLS(np.log((OLS_resid**2)),X_train).fit()
+        OLS_dummy_fitted_values = OLS_dummy.fittedvalues
+        weights = 1 / np.exp(OLS_dummy_fitted_values)
+
+        # Perform FWLS
+        wls = sm.WLS(y_train, X_train, weights = weights)
+        fwls = wls.fit()
+        fwls_predict = fwls.predict(X_test)
+        fwls_predict_train = fwls.predict(X_train)
+        fwls_mse = mean_squared_error(y_test, fwls_predict)
+        fwls_resid = fwls.resid
+        
+        #perform Breuh Pagan test on rescaled model
+        breush_pagan_fwls = sms.het_breuschpagan(fwls_resid, fwls.model.exog)
+       
+        plt.figure()
+        plt.hist(fwls_resid, bins= 30, color='blue', edgecolor = 'black', density = True)
+        sns.kdeplot(fwls_resid, color='red', linewidth = 3)
+        plt.xlabel('Residuals')
+        plt.ylabel('Probability')
+        plt.title('Residual Histogram FWLS')
+        plt.show()
+        
+        plt.figure()
+        plt.scatter(fwls_predict_train,fwls_resid, color='blue', alpha=0.7)
+        plt.axhline(y=0, color='red')
+        plt.xlabel('Predicted value')
+        plt.ylabel('Residual')
+        plt.title('Residual Scatter plot FWLS')
+        plt.show()
+        
+    
+
+        # Create a DataFrame with the selected features and target variable
+        data = forecast_data[features + ['Actual Value']]
+
+        # Calculate the correlation matrix
+        corr_matrix = data.corr()
+
+        # Generate the correlation heatmap using seaborn
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(corr_matrix, annot=True, cmap='coolwarm')
+        plt.title('Correlation Heatmap')
+        plt.show()
+        
+        # Split the data into train and test sets
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        lasso_alphas = np.logspace(-4, 2, 20)
+        lasso_pipeline = Pipeline([('scaler',StandardScaler()), ('model',Lasso())])
+        lasso_search = GridSearchCV(lasso_pipeline, {'model__alpha': lasso_alphas}, cv = 10, scoring = 'neg_mean_squared_error', return_train_score = True)
+        lasso_search.fit(X_train,y_train)
+        lasso_best_alpha = lasso_search.best_params_['model__alpha']
+        lasso_pipeline_fitted = Pipeline([('scaler', StandardScaler()), ('model', Lasso(alpha=lasso_best_alpha))])
+        lasso_pipeline_fitted.fit(X_train, y_train)
+        lasso_predict = lasso_pipeline_fitted.predict(X_test)
+        lasso_MSE = mean_squared_error(y_test, lasso_predict)
+        lasso_rsquared = r2_score(y_test, lasso_predict)
+        lasso_alpha_values = [params['model__alpha'] for params in lasso_search.cv_results_['params']]
+        lasso_mean_scores = -lasso_search.cv_results_['mean_test_score']
+        lasso_train_mse = -lasso_search.cv_results_['mean_train_score']
+        
+        lasso_coefficients = np.zeros((len(lasso_alpha_values), X_train.shape[1]))
+
+        for i, alpha in enumerate(lasso_alpha_values):
+            lasso_pipeline_fitted = Pipeline([('scaler', StandardScaler()), ('model', Lasso(alpha=alpha))])
+            lasso_pipeline_fitted.fit(X_train, y_train)
+            lasso_coefficients[i, :] = lasso_pipeline_fitted.named_steps['model'].coef_
+
+        # Plot coefficient values against penalty terms
+        plt.figure(figsize=(10, 6))
+
+        for i in range(lasso_coefficients.shape[1]):
+            plt.plot(lasso_alpha_values, lasso_coefficients[:, i], label=features[i])
+
+        plt.xscale('log')
+        plt.xlabel('Penalty Term (alpha)')
+        plt.ylabel('Coefficient Value')
+        plt.title('Lasso Coefficients')
+        plt.legend(fontsize = 'small')
+        plt.show()
+
+        # Get the coefficients from the logistic regression model
+        coefficients_lasso = lasso_search.best_estimator_[1].coef_
+
+        # Create a dataframe to store feature names and coefficients
+        feature_importance_lasso = pd.DataFrame({'Feature': features, 'Coefficient': coefficients_lasso})
+
+        # Sort the dataframe by absolute coefficient values in descending order
+        feature_importance_lasso = feature_importance_lasso.reindex(feature_importance_lasso['Coefficient'].abs().sort_values(ascending=False).index)
+        
+
+        # Plot the feature importances
+        plt.figure(figsize=(10, 6))
+        plt.bar(feature_importance_lasso['Feature'], feature_importance_lasso['Coefficient'], color = 'blue')
+        plt.xlabel('Feature')
+        plt.ylabel('Coefficient')
+        plt.title('Lasso Regression - Feature Importance in best model')
+        plt.xticks(rotation = 45)
+        plt.tight_layout()
+        plt.show()
+        
+       
+        plt.figure()
+        plt.plot(lasso_alpha_values, lasso_mean_scores,color = 'red',label='Test MSE')
+        plt.plot(lasso_alpha_values, lasso_train_mse, color = 'blue', label='Train MSE')
+        plt.xscale('log')
+        plt.xlabel('Alpha')
+        plt.ylabel('Mean Squared Error')
+        plt.legend()
+        plt.title(' Lasso Mean Squared Error vs. Alpha')
+        plt.show()
+        
+       
+         
+       # Split the data into train and test sets
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        ridge_alphas = np.logspace(-6,4,100)
+        ridge_pipeline = Pipeline([('scaler', StandardScaler()), ('model', Ridge())])
+        ridge_search = GridSearchCV(ridge_pipeline, param_grid={'model__alpha': ridge_alphas}, scoring='neg_mean_squared_error', cv=10,return_train_score = True)
+        ridge_search.fit(X_train, y_train)
+        ridge_best_alpha = ridge_search.best_params_['model__alpha']
+        ridge_pipeline_fitted = Pipeline([('scaler', StandardScaler()), ('model', Ridge(alpha=ridge_best_alpha))])
+        ridge_pipeline_fitted.fit(X_train, y_train)
+        ridge_predict = ridge_pipeline_fitted.predict(X_test)
+        ridge_RMSE = np.sqrt(mean_squared_error(y_test, ridge_predict))
+        ridge_rsquared = r2_score(y_test, ridge_predict)
+        ridge_alpha_values = [params['model__alpha'] for params in ridge_search.cv_results_['params']]
+        ridge_mean_scores = -ridge_search.cv_results_['mean_test_score']
+        ridge_train_mse = -ridge_search.cv_results_['mean_train_score']
+        
+        ridge_coefficients = np.zeros((len(ridge_alpha_values), X_train.shape[1]))
+
+        for i, alpha in enumerate(ridge_alpha_values):
+            ridge_pipeline_fitted = Pipeline([('scaler', StandardScaler()), ('model', Ridge(alpha=alpha))])
+            ridge_pipeline_fitted.fit(X_train, y_train)
+            ridge_coefficients[i, :] = ridge_pipeline_fitted.named_steps['model'].coef_
+
+        # Plot coefficient values against penalty terms
+        plt.figure(figsize=(10, 6))
+
+        for i in range(ridge_coefficients.shape[1]):
+            plt.plot(ridge_alpha_values, ridge_coefficients[:, i], label=features[i])
+
+        plt.xscale('log')
+        plt.xlabel('Penalty Term (alpha)')
+        plt.ylabel('Coefficient Value')
+        plt.title('Ridge Coefficients')
+        plt.legend(fontsize = 'small')
+        plt.show()
+
+        # Get the coefficients from the logistic regression model
+        coefficients_ridge = ridge_search.best_estimator_[1].coef_
+
+        # Create a dataframe to store feature names and coefficients
+        feature_importance_ridge = pd.DataFrame({'Feature': features, 'Coefficient': coefficients_ridge})
+
+        # Sort the dataframe by absolute coefficient values in descending order
+        feature_importance_ridge = feature_importance_ridge.reindex(feature_importance_ridge['Coefficient'].abs().sort_values(ascending=False).index)
+        
+
+        # Plot the feature importances
+        plt.figure(figsize=(10, 6))
+        plt.bar(feature_importance_ridge['Feature'], feature_importance_ridge['Coefficient'], color = 'blue')
+        plt.xlabel('Feature')
+        plt.ylabel('Coefficient')
+        plt.title('Ridge Regression - Feature Importance in best model')
+        plt.xticks(rotation = 45)
+        plt.tight_layout()
+        plt.show()
+        
+        plt.figure()
+        plt.plot(ridge_alpha_values, ridge_mean_scores,color = 'red',label='Test MSE')
+        plt.plot(ridge_alpha_values, ridge_train_mse, color = 'blue', label='Train MSE')
+        plt.xscale('log')
+        plt.xlabel('Alpha')
+        plt.ylabel('Mean Squared Error')
+        plt.legend()
+        plt.title(' Ridge Mean Squared Error vs. Alpha')
+        plt.show()
+
+        
+        elastic_alphas = np.logspace(-6, 4, num=100)
+        l1_ratio_values = np.linspace(0.1, 0.9, num=10)
+
+        elastic_pipeline = Pipeline([('scaler',StandardScaler()), ('model',ElasticNet())])
+        elastic_search = GridSearchCV(elastic_pipeline, param_grid = {'model__alpha': elastic_alphas, 'model__l1_ratio':l1_ratio_values}, scoring = 'neg_mean_squared_error', cv = 10,return_train_score = True)
+        elastic_search.fit(X_train, y_train)
+        elastic_best_alpha = elastic_search.best_params_['model__alpha']
+        elastic_best_l1_ratio = elastic_search.best_params_['model__l1_ratio']
+        elastic_pipeline_fitted = Pipeline([('scaler', StandardScaler()), ('model', ElasticNet(alpha = elastic_best_alpha, l1_ratio = elastic_best_l1_ratio))])
+        elastic_pipeline_fitted.fit(X_train,y_train)
+        elastic_predict = elastic_pipeline_fitted.predict(X_test)
+        elastic_RMSE = np.sqrt(mean_squared_error(y_test, elastic_predict))
+        elastic_rsquared = r2_score(y_test, elastic_predict)
+        
+        
+        elastic_alpha_values = [params['model__alpha'] for params in elastic_search.cv_results_['params']]
+        elastic_mean_scores = -elastic_search.cv_results_['mean_test_score']
+        elastic_train_mse = -elastic_search.cv_results_['mean_train_score']
+        
+        
+        elastic_coefficients = np.zeros((len(elastic_alpha_values), X_train.shape[1]))
+
+        for i, alpha in enumerate(elastic_alpha_values):
+            elastic_pipeline_fitted = Pipeline([('scaler', StandardScaler()), ('model', ElasticNet(alpha=alpha))])
+            elastic_pipeline_fitted.fit(X_train, y_train)
+            elastic_coefficients[i, :] = elastic_pipeline_fitted.named_steps['model'].coef_
+
+        # Plot coefficient values against penalty terms
+        plt.figure(figsize=(10, 6))
+
+        for i in range(elastic_coefficients.shape[1]):
+            plt.plot(elastic_alpha_values, elastic_coefficients[:, i], label=features[i])
+
+        plt.xscale('log')
+        plt.xlabel('Penalty Term (alpha)')
+        plt.ylabel('Coefficient Value')
+        plt.title('Elastic Net Coefficients')
+        plt.legend(fontsize = 'small')
+        plt.show()
+
+        # Get the coefficients from the logistic regression model
+        coefficients_elastic = elastic_search.best_estimator_[1].coef_
+
+        # Create a dataframe to store feature names and coefficients
+        feature_importance_elastic = pd.DataFrame({'Feature': features, 'Coefficient': coefficients_elastic})
+
+        # Sort the dataframe by absolute coefficient values in descending order
+        feature_importance_elastic = feature_importance_lasso.reindex(feature_importance_elastic['Coefficient'].abs().sort_values(ascending=False).index)
+        
+
+        # Plot the feature importances
+        plt.figure(figsize=(10, 6))
+        plt.bar(feature_importance_elastic['Feature'], feature_importance_elastic['Coefficient'], color = 'blue')
+        plt.xlabel('Feature')
+        plt.ylabel('Coefficient')
+        plt.title('ElasticNet Regression - Feature Importance in best model')
+        plt.xticks(rotation = 45)
+        plt.tight_layout()
+        plt.show()
+        
+        
+        plt.figure()
+        plt.plot(elastic_alpha_values, elastic_mean_scores,color = 'red',label='Test MSE')
+        plt.plot(elastic_alpha_values, elastic_train_mse, color = 'blue', label='Train MSE')
+        plt.xscale('log')
+        plt.xlabel('Alpha')
+        plt.ylabel('Mean Squared Error')
+        plt.legend()
+        plt.title(' Ridge Mean Squared Error vs. Alpha')
+        plt.show()
+
+        
+
+        y_binary = forecast_data['Rain']
+        scorer = make_scorer(brier_score_loss, greater_is_better=False)
+
+        #X_train_logistic, X_test_logistic, y_train_logistic, y_test_logistic = train_test_split(X, y_logistic, test_size=0.2, random_state=42)
+        c_values = np.logspace(-4, 2, 20)
+    
+        # Create a pipeline with a scaler and logistic regression
+        pipeline_logistic = Pipeline([('scaler', StandardScaler()), ('model', LogisticRegression())])
+        logistic_search = GridSearchCV(pipeline_logistic, param_grid={'model__C': c_values, 'model__penalty': ['l1', 'l2', 'elasticnet']}, scoring = scorer, cv=10)
+        logistic_search.fit(X, y_binary)
+
+        # Get the best hyperparameters and best model
+        best_params_logistic = logistic_search.best_params_
+        best_model_logistic = logistic_search.best_estimator_
+
+        # Extract the best penalty and value of C
+        best_penalty_logistic = best_params_logistic['model__penalty']
+        best_C_logistic = best_params_logistic['model__C']
+
+        # Evaluate the best model on the testing data
+        y_pred_logistic = best_model_logistic.predict(X)
+     
+        y_pred_prob_logistic = best_model_logistic.predict_proba(X)[:, 1]
+        
+        brier_score_logistic = brier_score_loss(y_binary, y_pred_prob_logistic)
+        brier_score_nwp = brier_score_loss(y_binary,forecast_data["p_rain"])
+        brier_skill_score = brier_skill_score = 1 - (brier_score_logistic / brier_score_nwp)
+        
+        # Compute the reliability curve
+        fraction_of_positives, mean_predicted_value = calibration_curve(y_binary, y_pred_prob_logistic, n_bins=10)
+        fraction_of_positives_nwp, mean_predicted_value_nwp = calibration_curve(y_binary, forecast_data["p_rain"], n_bins=10)
+
+        # Plot the reliability diagram
+        plt.plot(mean_predicted_value, fraction_of_positives,'s-', color = 'blue', label='Logistic Regression')
+        plt.plot(mean_predicted_value_nwp, fraction_of_positives_nwp, 'o-', color = 'black', label='NWP')
+        plt.plot([0, 1], [0, 1],  color='red')
+        plt.xlabel('Mean Predicted Value')
+        plt.ylabel('Fraction of Positives')
+        plt.title('Reliability Diagram')
+        plt.show()
+        
+        
+        #Get the coefficients from the logistic regression model
+        coefficients_logistic = best_model_logistic.named_steps['model'].coef_[0]
+
+        # Create a dataframe to store feature names and coefficients
+        feature_importance_logistic = pd.DataFrame({'Feature': features, 'Coefficient': coefficients_logistic})
+
+        # Sort the dataframe by absolute coefficient values in descending order
+        feature_importance_logistic = feature_importance_logistic.reindex(feature_importance_logistic['Coefficient'].abs().sort_values(ascending=False).index)
+
+        #confusion matrix
+        cm = confusion_matrix(y_binary,y_pred_logistic)
+    
+        sns.heatmap(cm, annot=True, fmt='g', cmap="Reds", xticklabels=['Rain', 'No rain'], yticklabels=['Rain', 'No rain'])
+        plt.ylabel('Actual',fontsize=13)
+        plt.xlabel('Prediction',fontsize=13)
+        plt.title('Confusion Matrix Heatmap',fontsize=10)
+        
+        plt.show()
+        
+        accuracy = accuracy_score(y_binary, y_pred_logistic)
+        precision = precision_score(y_binary, y_pred_logistic)
+        recall = recall_score(y_binary, y_pred_logistic)
+        F1_score = f1_score(y_binary, y_pred_logistic)
+
+        
+        # Plot the feature importances 
+        plt.figure(figsize=(10, 6))
+        plt.bar(feature_importance_logistic['Feature'], feature_importance_logistic['Coefficient'], color = 'blue')
+        plt.xlabel('Feature')
+        plt.ylabel('Coefficient')
+        plt.title('Logistic Regression - Feature Importance')
+        plt.xticks(rotation=90)
+        plt.tight_layout()
+        plt.show()
+        
+        
+    
+       
+        print("------------------ORIGINAL MODEL--------------------------")
+
+        print(f'RMSE_raw_Ensemble With Lead Time +{lead_time} For Station {forecast_station}', RMSE_NWP_raw_Ensemble)
+        print(f'RMSE_raw_HighRes With Lead Time +{lead_time} For Station {forecast_station}', RMSE_NWP_raw_HighRes)
+        
+        print("------------------OLS REGRESSION WITH NEW MODEL--------------------------")
+
+        print(f' The value of R-squared using OLS is: {OLS_rsquared}')
+        print(f' The root mean squared error of the test data using OLS is: {np.sqrt(OLS_MSE)}')
+        print(f' The root mean squared error of the test data using FWLS is: {np.sqrt(fwls_mse)}')
+       
+        print(f' OLS:The Largrange multiplier, p-value, F statistic value and F statistic p- value of the Breush Pagan test ')
+        print(breush_pagan)
+        print('FWLS:The Largrange multiplier, p-value, F statistic value and F statistic p- value of the Breush Pagan test ')
+        print(breush_pagan_fwls)
+        
+        print("------------------LOGISTIC REGRESSION--------------------------")
+        
+        
+        print("Logistic Regression: The best regularization method: ", best_penalty_logistic)
+        print("Logistic Regression:The best value of C: ", best_C_logistic)
+        print("Logistic Regression:The best accuracy score: ", accuracy)
+        print(f'The brier score of the logistic regression: {brier_score_logistic}')
+        print(f'The brier score of the NWP model: {brier_score_nwp}')
+        print(f'The brier skill score: {brier_skill_score}')
+        print("Accuracy   :", accuracy)
+        print("Precision   :", precision)
+        print("F1-score  :", F1_score)
+        print("Recall    :", recall)
+        
+        
+        print('\n')
+
+        print("------------------LASSO REGRESSION WITH NEW MODEL--------------------------")
+
+        print(f'The value of the best alpha is {lasso_best_alpha}')
+        print(f'The mean squared error of the test data using Lasso with the best alpha is: {np.sqrt(lasso_MSE)}')
+        print(f'The r squared of the test data using Lasso with the best alpha is: {lasso_rsquared}')
+        print('\n')
+
+
+        print("------------------RIDGE REGRESSION WITH NEW MODEL--------------------------")
+
+
+        print(f'The value of the best Ridge alpha is {ridge_best_alpha}')
+        print(f'The mean squared error of the test data using Ridge with the best alpha is: {ridge_RMSE}')
+        print(f'The r squared of the test data using Ridge with the best alpha is: {ridge_rsquared}')
+        print('\n')
+
+
+        print("------------------ELASTIC NET REGRESSION WITH NEW MODEL--------------------------")
+
+        print(f'The value of the best elasticNet alpha is {elastic_best_alpha}')
+        print(f'The mean squared error of the test data using ElasticNet with the best alpha is: {elastic_RMSE}')
+        print(f'The r squared of the test data using ElasticNet with the best alpha is: {elastic_rsquared}')
+        print(f'The value of the best l1 regularization fraction is {elastic_best_l1_ratio}')
+        print('\n')
+
+
+
+
+
+
+
+
+
