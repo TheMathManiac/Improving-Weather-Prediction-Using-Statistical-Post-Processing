@@ -1,1 +1,3 @@
-# Improving-Weather-Prediction-Using-Statistical-Post-Processing
+# Improving Weather Prediction Using Statistical Post-Processing
+
+Here, raw forecasts are taken from NWP model weather predictions and fed into a range of statistical post-processing models in order to improve upon these NWP model predictions. The range of statistical post-processing models used include linear regression with OLS, multiple linear regression with OLS and FWLS, Lasso Regression, Ridge Regression, Elastic Net Regression and logistic regression. Using the mean square root error (MSRE), I find the statistical post-processing models offer more accurate (lower MSRE values) weather predictions of daily rainfall than those obtained from the NWP models.
